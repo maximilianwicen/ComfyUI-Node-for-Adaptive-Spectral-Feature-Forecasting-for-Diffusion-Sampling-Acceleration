@@ -132,6 +132,7 @@ class MaxSpectrumPatcher:
                 "m": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1}),
                 "lam": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 100.0, "step": 0.001}),
                 "window_size": ("INT", {"default": 2, "min": 1, "max": 32, "step": 1}),
+                "warmup_steps": ("INT", {"default": 5, "min": 0, "max": 32, "step": 1}),
             }
         }
 
@@ -139,7 +140,7 @@ class MaxSpectrumPatcher:
     FUNCTION = "patch"
     CATEGORY = "model/patches"
 
-    def patch(self, model, w: float, m: int, lam: float, window_size: int):
+    def patch(self, model, w: float, m: int, lam: float, window_size: int, warmup_steps: int):
         model_clone = model.clone()
 
         # Keep separate Spectrum state per (cond_or_uncond) signature.
@@ -149,6 +150,7 @@ class MaxSpectrumPatcher:
         degree = int(max(1, m))
         lam_f = float(max(0.0, lam))
         win = int(max(1, window_size))
+        warmup = int(max(0, warmup_steps))
 
         def _get_state(key: Tuple[int, ...]) -> _SpectrumState:
             st = states.get(key)
@@ -226,7 +228,7 @@ class MaxSpectrumPatcher:
             st.last_t = t_val
 
             # Decide whether to do a real model pass.
-            must_run_real = (win <= 1) or (st.step_index % win == 0) or (len(st.cache_ts) < 2)
+            must_run_real = (st.step_index < warmup) or (win <= 1) or (st.step_index % win == 0) or (len(st.cache_ts) < 2)
             if must_run_real:
                 y = model_function(x_in, timestep, **c)
                 if not torch.is_tensor(y):
