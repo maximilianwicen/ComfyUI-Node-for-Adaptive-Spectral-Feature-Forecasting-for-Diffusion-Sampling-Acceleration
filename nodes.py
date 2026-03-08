@@ -122,7 +122,7 @@ class _SpectrumState:
         self.last_device = None
 
 
-class ValVexSpectrumPatcher:
+class MaxSpectrumPatcher:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -300,9 +300,9 @@ class ValVexSpectrumPatcher:
 
 
 NODE_CLASS_MAPPINGS = {
-    "ValVexSpectrumPatcher": ValVexSpectrumPatcher,
+    "MaxSpectrumPatcher": MaxSpectrumPatcher,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ValVexSpectrumPatcher": "Spectrum Patcher (ValVex)",
+    "MaxSpectrumPatcher": "Spectrum Patcher (Max)",
 }

@@ -1,4 +1,4 @@
-# Spectrum Patcher (ValVex) — ComfyUI Model Patch
+# Spectrum Patcher (Max) — ComfyUI Model Patch
 
 Training-free diffusion acceleration via Chebyshev spectral forecasting (in the style of *Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceleration*).
 
@@ -22,9 +22,9 @@ Then restart ComfyUI.
 
 ## Node
 
-- Menu name: **Spectrum Patcher (ValVex)**
+- Menu name: **Spectrum Patcher (Max)**
 - Category: `model/patches`
-- Internal id: `ValVexSpectrumPatcher`
+- Internal id: `MaxSpectrumPatcher`
 
 ## Parameters
 
