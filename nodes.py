@@ -11,6 +11,27 @@ def _to_float_timestep(timestep) -> float:
     return float(timestep)
 
 
+def _is_flow_schedule(c: dict) -> bool:
+    """Return True if the sigma schedule looks like a rectified-flow model (Z-Image Turbo, Flux, SD3, etc.).
+
+    These models use sigmas in [0, 1] with a near-linear schedule, unlike standard
+    diffusion models (SD 1.5, SDXL) whose sigmas reach ~14+.
+    """
+    try:
+        t_opts = c.get("transformer_options", None) if isinstance(c, dict) else None
+        if not isinstance(t_opts, dict):
+            return False
+        sigmas = t_opts.get("sample_sigmas", None)
+        if sigmas is None:
+            sigmas = t_opts.get("sigmas", None)
+        if torch.is_tensor(sigmas) and sigmas.numel() > 1:
+            s_max = float(sigmas.detach().flatten().float().max().item())
+            return s_max <= 1.05
+    except Exception:
+        pass
+    return False
+
+
 def _schedule_minmax_from_c(c: dict) -> Optional[Tuple[float, float]]:
     try:
         t_opts = c.get("transformer_options", None)
@@ -132,6 +153,10 @@ class MaxSpectrumPatcher:
                 "m": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1}),
                 "lam": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 100.0, "step": 0.001}),
                 "window_size": ("INT", {"default": 2, "min": 1, "max": 32, "step": 1}),
+                "model_type": (["auto", "eps", "flow"], {"default": "auto",
+                    "tooltip": "Model parameterization. 'flow' covers rectified-flow models "
+                               "(Z-Image Turbo, Flux, SD3). 'eps' covers standard diffusion "
+                               "(SD 1.5, SDXL). 'auto' detects from the sigma schedule."}),
             }
         }
 
@@ -139,7 +164,7 @@ class MaxSpectrumPatcher:
     FUNCTION = "patch"
     CATEGORY = "model/patches"
 
-    def patch(self, model, w: float, m: int, lam: float, window_size: int):
+    def patch(self, model, w: float, m: int, lam: float, window_size: int, model_type: str = "auto"):
         model_clone = model.clone()
 
         # Keep separate Spectrum state per (cond_or_uncond) signature.
@@ -149,6 +174,8 @@ class MaxSpectrumPatcher:
         degree = int(max(1, m))
         lam_f = float(max(0.0, lam))
         win = int(max(1, window_size))
+        forced_flow = model_type == "flow"
+        forced_eps = model_type == "eps"
 
         def _get_state(key: Tuple[int, ...]) -> _SpectrumState:
             st = states.get(key)
@@ -201,6 +228,16 @@ class MaxSpectrumPatcher:
             except Exception:
                 schedule = None
 
+            # Detect model type for correct sigma-domain handling.
+            # Rectified-flow models (Z-Image Turbo, Flux, SD3) use sigmas in [0, 1];
+            # standard diffusion models (SD 1.5, SDXL) use much larger sigma ranges.
+            if forced_flow:
+                is_flow = True
+            elif forced_eps:
+                is_flow = False
+            else:
+                is_flow = _is_flow_schedule(c)
+
             if torch.is_tensor(schedule) and schedule.numel() > 1:
                 sigmas = schedule.detach().flatten()
                 t0 = float(sigmas[0].item())
@@ -225,6 +262,25 @@ class MaxSpectrumPatcher:
 
             st.last_t = t_val
 
+            def _resolve_tminmax(extra_t=None):
+                """Return (t_min, t_max) for Chebyshev domain normalization.
+
+                Priority: schedule from context → flow-model canonical [0,1] →
+                cache-derived range.
+                """
+                tminmax = _schedule_minmax_from_c(c)
+                if tminmax is not None:
+                    return tminmax
+                # For flow models (Z-Image Turbo, Flux, SD3) fall back to [0, 1].
+                if is_flow:
+                    return 0.0, 1.0
+                pts = list(st.cache_ts)
+                if extra_t is not None:
+                    pts = pts + [extra_t]
+                if not pts:
+                    return 0.0, 1.0
+                return float(min(pts)), float(max(pts))
+
             # Decide whether to do a real model pass.
             must_run_real = (win <= 1) or (st.step_index % win == 0) or (len(st.cache_ts) < 2)
             if must_run_real:
@@ -244,13 +300,7 @@ class MaxSpectrumPatcher:
 
                 # Fit coefficients once we have at least 2 points.
                 try:
-                    tminmax = _schedule_minmax_from_c(c)
-                    if tminmax is None:
-                        t_min = float(min(st.cache_ts))
-                        t_max = float(max(st.cache_ts))
-                    else:
-                        t_min, t_max = tminmax
-
+                    t_min, t_max = _resolve_tminmax()
                     ts = torch.tensor(st.cache_ts, device=y.device, dtype=torch.float32)
                     xs = _normalize_to_chebyshev_domain(ts, t_min=t_min, t_max=t_max)
                     Phi = _chebyshev_design_matrix(xs, degree=degree)
@@ -269,13 +319,7 @@ class MaxSpectrumPatcher:
             try:
                 last_real = st.cache_y[-1]
 
-                tminmax = _schedule_minmax_from_c(c)
-                if tminmax is None:
-                    t_min = float(min(st.cache_ts + [t_val]))
-                    t_max = float(max(st.cache_ts + [t_val]))
-                else:
-                    t_min, t_max = tminmax
-
+                t_min, t_max = _resolve_tminmax(extra_t=t_val)
                 x_t = _normalize_to_chebyshev_domain(
                     torch.tensor([t_val], device=last_real.device, dtype=torch.float32),
                     t_min=t_min,
